@@ -1,39 +1,85 @@
+import platform
+import psutil
+import cpuinfo
+import subprocess
+import sys
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
-import os
-import sys
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
 
-# === YOUR LAPTOP SPECS (UPDATE THESE!) ===
-laptop_specs = {
-    "CPU": "Intel Core i5-10300H",
-    "GPU": "NVIDIA GeForce GTX 1650 4GB",
-    "RAM": "16 GB DDR4",
-    "Storage": "512 GB SSD",
-    "OS": "Windows 11"
-}
 
-# Convert specs to formatted string
-specs_str = "\n".join([f"{k}: {v}" for k, v in laptop_specs.items()])
+# === SIMPLE DYNAMIC SPECS ===
+def get_specs():
+    specs = {}
 
-# === PROMPT TEMPLATE ===
+    # OS
+    specs["OS"] = f"{platform.system()} {platform.release()}"
+
+    # CPU
+    try:
+        specs["CPU"] = cpuinfo.get_cpu_info()['brand_raw']
+    except:
+        specs["CPU"] = platform.processor() or "Unknown CPU"
+
+    # RAM
+    specs["RAM"] = f"{psutil.virtual_memory().total // (1024 ** 3)} GB"
+
+    # Storage
+    total = psutil.disk_usage('/').total // (1024 ** 3)
+    specs["Storage"] = f"{total} GB"
+
+    # GPU (Windows: wmic | Linux: lspci | macOS: system_profiler)
+    gpu = "Unknown GPU"
+    system = platform.system()
+
+    if system == "Windows":
+        try:
+            result = subprocess.check_output(
+                'wmic path win32_videocontroller get name', shell=True, text=True
+            )
+            for line in result.splitlines():
+                if line.strip() and "Name" not in line:
+                    gpu = line.strip()
+                    break
+        except:
+            pass
+    elif system == "Linux":
+        try:
+            result = subprocess.check_output('lspci', text=True)
+            for line in result.splitlines():
+                if 'VGA' in line or '3D' in line:
+                    gpu = line.split(':')[1].strip()
+                    break
+        except:
+            pass
+
+    specs["GPU"] = gpu
+    return specs
+
+
+# Get specs
+specs = get_specs()
+specs_str = "\n".join(f"{k}: {v}" for k, v in specs.items())
+
+# === PROMPT ===
 template = """
-You are a gaming system analyst. Determine if the given game can run on this laptop.
+You are a gaming analyst. Can this game run on the laptop?
 
-Laptop Specs:
+Laptop:
 {specs}
 
 Game: {game_name}
 
-Be accurate and technical.
+Answer: Yes/No + short reason. Include FPS estimate if possible.
 """
 
 prompt = PromptTemplate.from_template(template)
 
-# === LLM SETUP ===
+# === LLM ===
 llm = ChatOpenAI(
     base_url='https://openrouter.ai/api/v1',
     api_key=os.getenv("OPENROUTER_API_KEY"),
@@ -42,36 +88,23 @@ llm = ChatOpenAI(
 )
 chain = prompt | llm | StrOutputParser()
 
-# === COMMAND-LINE FUNCTION ===
-def check_game_from_cmd():
-    if len(sys.argv) != 2:
-        print("Usage: python script.py \"Game Name Here\"")
-        print("Example: python script.py \"Cyberpunk 2077\"")
-        sys.exit(1)
+# === CLI ===
+if len(sys.argv) != 2:
+    print("Usage: python game_check.py \"Game Name\"")
+    sys.exit(1)
 
-    game_name = sys.argv[1].strip()
+game_name = sys.argv[1]
 
-    print("\n" + "="*60)
-    print("   LAPTOP GAME COMPATIBILITY CHECKER")
-    print("="*60)
-    print(f"Your Laptop Specs:\n{specs_str}\n")
-    print(f"Checking compatibility for: {game_name}")
-    print("\nAnalyzing...")
+print("\n" + "=" * 50)
+print("   GAME COMPATIBILITY CHECK")
+print("=" * 50)
+print(f"System:\n{specs_str}\n")
+print(f"Game: {game_name}")
+print("Analyzing...\n")
 
-    try:
-        response = chain.invoke({
-            "specs": specs_str,
-            "game_name": game_name,
-        })
-        print("\n" + "="*60)
-        print(f" RESULT FOR: {game_name.upper()}")
-        print("="*60)
-        print(response)
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+response = chain.invoke({"specs": specs_str, "game_name": game_name})
 
-
-# === RUN FROM CMD ===
-if __name__ == "__main__":
-    check_game_from_cmd()
+print("=" * 50)
+print(f"RESULT: {game_name.upper()}")
+print("=" * 50)
+print(response)
